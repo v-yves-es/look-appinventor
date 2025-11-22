@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Look — App Inventor bridge</title>
+  <!-- Zorg dat de volgende bestanden in dezelfde map staan: 
+       tfjs-0.12.4.js  look.js  weights_manifest.json  group1-shard1of1  scavenger_classes.js  web_model.pb  (en andere assets).
+       Dit bestand is bedoeld om direct op GitHub Pages gehost te worden. -->
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:1rem}
+    #preview{max-width:100%;height:auto;border:1px solid #ddd;margin-top:0.5rem}
+    #results{margin-top:0.5rem}
+    button,input{margin:0.25rem 0.25rem 0.25rem 0}
+  </style>
+</head>
+<body>
+  <h1>Look (App Inventor bridge)</h1>
+
+  <!-- Simple UI for testing standalone -->
+  <div id="controls">
+    <input id="fileInput" type="file" accept="image/*" />
+    <button id="btnClassify">Classify selected image</button>
+    <button id="btnStartCamera">Open camera (if supported)</button>
+    <video id="video" autoplay playsinline style="display:none;max-width:100%"></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+  </div>
+
+  <img id="preview" alt="preview" />
+
+  <div id="results" aria-live="polite"></div>
+
+  <!-- load tfjs and the existing look files (assumed present in same folder) -->
+  <script src="tfjs-0.12.4.js"></script>
+  <script src="look.js"></script> <!-- bestaande implementatie van model/inference -->
+  <script>
+  // App Inventor bridge + helper functions
+  // - When predictions are available, call sendToAppInventor(predictions)
+  // - AppInventor will receive a JSON string via WebViewString and can handle it.
+  //
+  // Predictions format used here: [{label: "cat", confidence: 0.92}, ...]
+  // If your look.js already creates predictions itself, add a call there to:
+  //    if (window.onPredictionsReady) window.onPredictionsReady(preds);
+  //
+  // This page also exposes window.receiveFromApp(payloadString) to receive commands from AppInventor
+  // Example command from AppInventor to classify base64 image:
+  //    {"cmd":"classify_base64","image_base64":"data:image/jpeg;base64,..."}
+  //
+  // Or to ask the page to start camera/classify: {"cmd":"start"} or {"cmd":"startCamera"}
+
+  function sendToAppInventor(predictions) {
+    var payload = {
+      type: "predictions",
+      timestamp: (new Date()).toISOString(),
+      predictions: predictions
+    };
+    var s = JSON.stringify(payload);
+    // If running inside App Inventor WebViewer this will pass the string back to the app.
+    if (window.AppInventor && typeof AppInventor.setWebViewString === "function") {
+      AppInventor.setWebViewString(s);
+    } else {
+      // For debugging in desktop browser: show results in page console and results div
+      console.log("AppInventor bridge not available. Payload:", s);
+    }
+    // Also update on-screen results
+    showResults(predictions);
+  }
+
+  // This function can be called by look.js when it has predictions
+  window.onPredictionsReady = function(preds) {
+    // Ensure preds is an array of objects {label, confidence}
+    try {
+      sendToAppInventor(preds);
+    } catch (e) {
+      console.error("sendToAppInventor failed:", e);
+    }
+  };
+
+  // Function for page to receive commands from App Inventor
+  window.receiveFromApp = function(payloadStr) {
+    try {
+      var obj = JSON.parse(payloadStr);
+    } catch (e) {
+      console.error("Invalid JSON from app:", e);
+      return;
+    }
+    if (!obj.cmd) return;
+    switch (obj.cmd) {
+      case "classify_base64":
+        if (obj.image_base64) classifyBase64Image(obj.image_base64);
+        break;
+      case "start":
+      case "startCamera":
+        startCamera();
+        break;
+      case "stopCamera":
+        stopCamera();
+        break;
+      default:
+        console.warn("Unknown command from app:", obj.cmd);
+    }
+  };
+
+  // Simple UI helpers
+  var fileInput = document.getElementById("fileInput");
+  var preview = document.getElementById("preview");
+  var canvas = document.getElementById("canvas");
+  var video = document.getElementById("video");
+  var resultsDiv = document.getElementById("results");
+
+  fileInput.addEventListener("change", function () {
+    var f = fileInput.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      preview.src = e.target.result;
+      preview.onload = function() {
+        // If look.js exposes a classifyFromImage function, try calling it.
+        tryClassifyDOMImage(preview);
+      };
+    };
+    reader.readAsDataURL(f);
+  });
+
+  document.getElementById("btnClassify").addEventListener("click", function(){
+    if (preview.src) {
+      tryClassifyDOMImage(preview);
+    } else if (fileInput.files.length) {
+      // trigger change handler
+      var evt = new Event('change'); fileInput.dispatchEvent(evt);
+    } else {
+      alert("Kies eerst een afbeelding of gebruik de camera.");
+    }
+  });
+
+  document.getElementById("btnStartCamera").addEventListener("click", function(){
+    startCamera();
+  });
+
+  function showResults(predictions) {
+    resultsDiv.innerHTML = "";
+    if (!predictions || predictions.length === 0) {
+      resultsDiv.textContent = "Geen resultaten";
+      return;
+    }
+    var ul = document.createElement("ul");
+    predictions.forEach(function(p) {
+      var li = document.createElement("li");
+      li.textContent = p.label + " — " + (Math.round(p.confidence * 10000)/100) + "%";
+      ul.appendChild(li);
+    });
+    resultsDiv.appendChild(ul);
+  }
+
+  // classifyBase64Image: load base64 into image and call classifier
+  function classifyBase64Image(dataUrl) {
+    var img = new Image();
+    img.onload = function() {
+      preview.src = dataUrl;
+      tryClassifyDOMImage(img);
+    };
+    img.onerror = function(e){ console.error("Invalid base64 image", e); };
+    img.src = dataUrl;
+  }
+
+  // tryClassifyDOMImage: attempts to call existing inference function exposed by look.js
+  // If look.js exposes a function like `classify(img)` or `predict(img)` or `runInference(img)`:
+  // adjust the checks below to call the correct one. If none exists, you will need to
+  // add a small call into look.js where the predictions are produced (see instructions below).
+  function tryClassifyDOMImage(imgElement) {
+    // If look.js provides a global function named `classifyImage` (example), call it:
+    if (typeof window.classifyImage === "function") {
+      window.classifyImage(imgElement).then(function(preds){
+        if (window.onPredictionsReady) window.onPredictionsReady(preds);
+      }).catch(function(err){console.error(err);});
+      return;
+    }
+    // If look.js provides a synchronous `predictFromImage` function:
+    if (typeof window.predictFromImage === "function") {
+      try {
+        var preds = window.predictFromImage(imgElement);
+        if (window.onPredictionsReady) window.onPredictionsReady(preds);
+      } catch (e) { console.error(e); }
+      return;
+    }
+    // If look.js uses a model object accessible as window.model with a predict method:
+    if (window.model && typeof window.model.predict === "function") {
+      // draw to canvas, convert to tensor etc. This is a generic attempt and may need adaptatie.
+      var ctx = canvas.getContext("2d");
+      canvas.width = 224; canvas.height = 224; // adjust size to model expected input
+      ctx.drawImage(imgElement, 0, 0, canvas.width, canvas.height);
+      // Use tf (legacy v0.12 API might differ). Try common approach:
+      try {
+        var imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+        // Convert to tensor and normalize — you may need to adjust preprocessing to match model
+        var t = tf.browser.fromPixels(imgData).toFloat().div(tf.scalar(255)).expandDims(0);
+        Promise.resolve(window.model.predict(t)).then(function(rawPreds){
+          // Convert rawPreds (tensor or array) to array of probabilities/labels
+          if (rawPreds.data) {
+            rawPreds.data().then(function(arr){
+              var preds = arrayToLabelConfidence(arr);
+              if (window.onPredictionsReady) window.onPredictionsReady(preds);
+            });
+          } else {
+            // assume array already
+            var preds = arrayToLabelConfidence(rawPreds);
+            if (window.onPredictionsReady) window.onPredictionsReady(preds);
+          }
+        }).catch(function(e){ console.error(e); });
+      } catch (e) {
+        console.error("Model predict attempt failed:", e);
+      }
+      return;
+    }
+
+    // If we reach here, no known entrypoint found.
+    console.warn("Geen bekende predict-entrypoint gevonden in look.js. Je moet look.js aanpassen zodat het de voorspellingen naar window.onPredictionsReady(preds) stuurt.");
+    resultsDiv.textContent = "Zie console: geen predict entrypoint gevonden. Pas look.js aan om window.onPredictionsReady(preds) aan te roepen.";
+  }
+
+  // Utility to map numeric outputs to labels if scavenger_classes is present
+  function arrayToLabelConfidence(arr) {
+    // Try to read classes from scavenger_classes.js if it defines `CLASSES` or `classes`
+    var labels = [];
+    if (window.CLASSES && Array.isArray(window.CLASSES)) labels = window.CLASSES;
+    else if (window.classes && Array.isArray(window.classes)) labels = window.classes;
+    else {
+      // fallback: create generic labels
+      for (var i=0;i<arr.length;i++) labels.push("class_"+i);
+    }
+    var pairs = [];
+    for (var i=0;i<arr.length;i++) {
+      pairs.push({label: labels[i] || ("class_"+i), confidence: +arr[i]});
+    }
+    // sort by confidence desc
+    pairs.sort(function(a,b){return b.confidence - a.confidence;});
+    return pairs.slice(0,5);
+  }
+
+  // Camera handling (simple)
+  var streamRef = null;
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("Camera niet ondersteund in deze WebView/browser.");
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}}).then(function(s){
+      streamRef = s;
+      video.srcObject = s;
+      video.style.display = "block";
+      // create periodic capture and classify frames if desired (disabled by default)
+      // example: capture one frame after video plays
+      video.onloadedmetadata = function(){
+        setTimeout(function(){ captureFrameAndClassify(); }, 500);
+      };
+    }).catch(function(err){
+      console.error("Camera error:", err);
+      alert("Kon camera niet openen: " + err.message);
+    });
+  }
+  function stopCamera() {
+    if (streamRef) {
+      streamRef.getTracks().forEach(t=>t.stop());
+      streamRef = null;
+      video.style.display = "none";
+    }
+  }
+  function captureFrameAndClassify() {
+    if (!video || video.readyState < 2) return;
+    var w = video.videoWidth, h = video.videoHeight;
+    canvas.width = 224; canvas.height = 224; // adapt to model input
+    var ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    // set preview for user
+    preview.src = canvas.toDataURL("image/jpeg");
+    // call classifier on preview (image element)
+    tryClassifyDOMImage(preview);
+  }
+
+  // Helper: allow sending a small test from the page to the AppInventor bridge if present
+  window.sendTest = function(){
+    sendToAppInventor([{label:"test", confidence:0.123}]);
+  };
+
+  // If look.js produces predictions internally, consider adding something like this line
+  // at the point predictions are ready in look.js:
+  //    if (window.onPredictionsReady) window.onPredictionsReady(predictionsArray);
+  //
+  // End bridge script.
+  </script>
+</body>
+</html>

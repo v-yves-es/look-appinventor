@@ -3,8 +3,9 @@
 
 console.log("Look: Using TensorFlow.js version " + tf.version.tfjs);
 
-const MOBILENET_MODEL_PATH = "https://emojiscavengerhunt.withgoogle.com/model/web_model.pb";
-const WEIGHTS_MANIFEST_FILE_URL = "https://emojiscavengerhunt.withgoogle.com/model/weights_manifest.json";
+// AANGEPAST: gebruik lokale modelbestanden in plaats van externe URL
+const MOBILENET_MODEL_PATH = "./web_model.pb";
+const WEIGHTS_MANIFEST_FILE_URL = "./weights_manifest.json";
 
 const IMAGE_SIZE = 224;
 const TOPK_PREDICTIONS = 10;
@@ -25,10 +26,20 @@ const mobilenetDemo = async () => {
     mobilenet.predict(zeros).dispose();
     zeros.dispose();
     console.log("Look: Mobilenet ready");
-    Look.ready();
+    // AANGEPAST: Look.ready() bestaat niet in standalone mode, stuur naar bridge
+    if (window.Look && typeof window.Look.ready === "function") {
+      Look.ready();
+    } else {
+      console.log("Look: Model ready (standalone mode, no Android bridge)");
+    }
   } catch (error) {
     console.log("Look: " + error);
-    Look.error(ERROR_CLASSIFICATION_NOT_SUPPORTED);
+    // AANGEPAST: controleer of Look.error bestaat
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_CLASSIFICATION_NOT_SUPPORTED);
+    } else {
+      console.error("Look: Model load failed (no Android bridge to report error)");
+    }
   }
 };
 
@@ -61,10 +72,14 @@ async function predict(pixels) {
     }
 
     // Bestaande Android callback (houd dit zodat Android-extensie blijft werken)
-    Look.reportResult(JSON.stringify(result));
+    if (window.Look && typeof window.Look.reportResult === "function") {
+      Look.reportResult(JSON.stringify(result));
+    }
   } catch (error) {
     console.log("Look: " + error);
-    Look.error(ERROR_CLASSIFICATION_NOT_SUPPORTED);
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_CLASSIFICATION_NOT_SUPPORTED);
+    }
   }
 }
 
@@ -117,7 +132,7 @@ function startVideo() {
   if (isVideoMode) {
     navigator.mediaDevices.getUserMedia({video: {facingMode: frontFacing ? "user" : "environment"}, audio: false})
     .then(stream => (video.srcObject = stream))
-    .catch(e => log(e));
+    .catch(e => console.error("startVideo error:", e));
     video.style.display = "block";
   }
 }
@@ -135,7 +150,9 @@ function toggleCameraFacingMode() {
     stopVideo();
     startVideo();
   } else {
-    Look.error(ERROR_CANNOT_TOGGLE_CAMERA_IN_IMAGE_MODE);
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_CANNOT_TOGGLE_CAMERA_IN_IMAGE_MODE);
+    }
   }
 }
 
@@ -146,7 +163,9 @@ function classifyImageData(imageData) {
     }
     img.src = "data:image/png;base64," + imageData;
   } else {
-    Look.error(ERROR_CANNOT_CLASSIFY_IMAGE_IN_VIDEO_MODE);
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_CANNOT_CLASSIFY_IMAGE_IN_VIDEO_MODE);
+    }
   }
 }
 
@@ -154,7 +173,9 @@ function classifyVideoData() {
   if (isVideoMode) {
     predict(video);
   } else {
-    Look.error(ERROR_CANNOT_CLASSIFY_VIDEO_IN_IMAGE_MODE);
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_CANNOT_CLASSIFY_VIDEO_IN_IMAGE_MODE);
+    }
   }
 }
 
@@ -168,7 +189,9 @@ function setInputMode(inputMode) {
     isVideoMode = true;
     startVideo();
   } else if (inputMode !== "image" && inputMode !== "video") {
-    Look.error(ERROR_INVALID_INPUT_MODE);
+    if (window.Look && typeof window.Look.error === "function") {
+      Look.error(ERROR_INVALID_INPUT_MODE);
+    }
   }
 }
 

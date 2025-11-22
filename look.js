@@ -48,6 +48,19 @@ async function predict(pixels) {
       result.push([classes[i].className, classes[i].probability.toFixed(5)]);
     }
     console.log("Look: prediction is " + JSON.stringify(result));
+
+    // --- NEW: stuur voorspellingen ook naar de App Inventor WebViewer bridge indien aanwezig
+    try {
+      // zet om naar formaat [{label, confidence}, ...] met confidence als number
+      const preds = result.map(function(r){ return { label: r[0], confidence: parseFloat(r[1]) }; });
+      if (window.onPredictionsReady && typeof window.onPredictionsReady === "function") {
+        try { window.onPredictionsReady(preds); } catch(e) { console.warn("onPredictionsReady error:", e); }
+      }
+    } catch(e) {
+      console.warn("Could not send predictions to App Inventor bridge:", e);
+    }
+
+    // Bestaande Android callback (houd dit zodat Android-extensie blijft werken)
     Look.reportResult(JSON.stringify(result));
   } catch (error) {
     console.log("Look: " + error);
@@ -164,5 +177,35 @@ window.addEventListener("resize", function() {
   video.width = window.innerWidth;
   video.height = video.videoHeight * window.innerWidth / video.videoWidth;
 });
+
+// --- NEW: convenience wrappers voor gebruik vanuit WebViewer / console / bridge
+
+// Classificeer een Image DOM element (bv. <img> of canvas)
+window.classifyImageElement = function(imgElement) {
+  // retourneert een promise die wordt vervuld zodra predict klaar is (indien predict async)
+  return predict(imgElement);
+};
+
+// Classificeer een data URL ("data:image/jpeg;base64,...") of pure base64 string.
+// Als je een volledige data URL meegeeft, wordt het juiste deel eruit gehaald.
+window.classifyDataUrl = function(dataUrlOrBase64) {
+  if (!dataUrlOrBase64) return;
+  if (dataUrlOrBase64.indexOf('data:') === 0) {
+    var comma = dataUrlOrBase64.indexOf(',');
+    var b64 = dataUrlOrBase64.substring(comma + 1);
+    classifyImageData(b64);
+  } else {
+    // verondersteld pure base64 zonder prefix
+    classifyImageData(dataUrlOrBase64);
+  }
+};
+
+// Classificeer een frame uit de video (indien video mode actief)
+window.classifyVideo = function() {
+  classifyVideoData();
+};
+
+// Als de pagina in een App Inventor WebViewer draait en die WebViewer de bridge configureert,
+// moet die bridge window.onPredictionsReady(preds) definiëren (dat doet de aangepaste look_appinventor_bridge.html).
 
 mobilenetDemo();
